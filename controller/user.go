@@ -1023,13 +1023,22 @@ func checkUpdatePassword(originalPassword string, newPassword string, userId int
 		return
 	}
 
+	// No new password means this update is not touching the password at all —
+	// it is a display-name or username change — so there is nothing for the
+	// original password to authorise. Checking it first made every profile edit
+	// require a password, which is impossible for JINN's passwordless email-OTP
+	// accounts: they are created with a generated password the customer never
+	// sees, so originalPassword is always "" and this always failed with
+	// 原密码错误. The caller is already authenticated as this user by
+	// middleware, and userId comes from the session, so nothing is loosened.
+	if newPassword == "" {
+		return
+	}
+
 	// 密码不为空,需要验证原密码
 	// 支持第一次账号绑定时原密码为空的情况
 	if !common.ValidatePasswordAndHash(originalPassword, currentUser.Password) && currentUser.Password != "" {
 		err = fmt.Errorf("原密码错误")
-		return
-	}
-	if newPassword == "" {
 		return
 	}
 	updatePassword = true
