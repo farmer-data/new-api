@@ -19,9 +19,9 @@ func truncateSubscriptionTables(t *testing.T) {
 
 func withStubbedAirwallex(t *testing.T, fn func(customerId string) ([]airwallex.BillingSubscription, error)) {
 	t.Helper()
-	orig := listActiveBillingSubscriptions
-	listActiveBillingSubscriptions = fn
-	t.Cleanup(func() { listActiveBillingSubscriptions = orig })
+	orig := listBillingSubscriptions
+	listBillingSubscriptions = fn
+	t.Cleanup(func() { listBillingSubscriptions = orig })
 }
 
 func seedRenewingSub(t *testing.T, userId int, customerId string) *model.UserSubscription {
@@ -54,7 +54,7 @@ func TestReconcileMarksCustomerWithNoActiveSubscription(t *testing.T) {
 	sub := seedRenewingSub(t, 7, "bcus_gone")
 
 	withStubbedAirwallex(t, func(string) ([]airwallex.BillingSubscription, error) {
-		return nil, nil // cancelled subscriptions leave the ACTIVE set immediately
+		return []airwallex.BillingSubscription{{Id: "sub_1", Status: "CANCELLED"}}, nil
 	})
 
 	n, err := ReconcileAirwallexCancellations(100)
@@ -145,5 +145,98 @@ func TestReconcileQueriesEachCustomerOnce(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("made %d Airwallex calls for one user, want 1", calls)
+	}
+}
+
+// The statuses below are the ones that made the first version of this pass
+// wrong in production: it asked Airwallex for ACTIVE subscriptions and read an
+// empty answer as "cancelled", which silently swallowed every other state.
+func TestReconcileDoesNotMarkNonTerminalStatuses(t *testing.T) {
+	for _, status := range []string{"UNPAID", "PENDING", "IN_TRIAL", "SOMETHING_NEW"} {
+		t.Run(status, func(t *testing.T) {
+			truncateSubscriptionTables(t)
+			sub := seedRenewingSub(t, 7, "bcus_"+status)
+
+			withStubbedAirwallex(t, func(string) ([]airwallex.BillingSubscription, error) {
+				return []airwallex.BillingSubscription{{Id: "sub_1", Status: status}}, nil
+			})
+
+			n, err := ReconcileAirwallexCancellations(100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatalf("marked %d users on status %s, want 0", n, status)
+			}
+			if got := cancelledAt(t, sub.Id); got != 0 {
+				t.Fatalf("cancelled_at = %d on status %s, want 0 — only a definitively "+
+					"finished subscription is a cancellation; UNPAID is dunning and can recover", got, status)
+			}
+		})
+	}
+}
+
+func TestReconcileMarksOnlyWhenEverySubscriptionIsFinished(t *testing.T) {
+	truncateSubscriptionTables(t)
+	sub := seedRenewingSub(t, 7, "bcus_mixed")
+
+	// An old cancelled subscription alongside a live one: the live one wins.
+	withStubbedAirwallex(t, func(string) ([]airwallex.BillingSubscription, error) {
+		return []airwallex.BillingSubscription{
+			{Id: "sub_old", Status: "CANCELLED"},
+			{Id: "sub_new", Status: "ACTIVE"},
+		}, nil
+	})
+	if _, err := ReconcileAirwallexCancellations(100); err != nil {
+		t.Fatal(err)
+	}
+	if got := cancelledAt(t, sub.Id); got != 0 {
+		t.Fatalf("cancelled_at = %d, want 0 — one live subscription means still renewing", got)
+	}
+
+	// Now every one of them is over.
+	withStubbedAirwallex(t, func(string) ([]airwallex.BillingSubscription, error) {
+		return []airwallex.BillingSubscription{
+			{Id: "sub_old", Status: "CANCELLED"},
+			{Id: "sub_new", Status: "EXPIRED"},
+		}, nil
+	})
+	if _, err := ReconcileAirwallexCancellations(100); err != nil {
+		t.Fatal(err)
+	}
+	if cancelledAt(t, sub.Id) == 0 {
+		t.Fatal("every subscription finished — should have been marked")
+	}
+}
+
+func TestSubscriptionIsFinished(t *testing.T) {
+	for status, want := range map[string]bool{
+		"CANCELLED": true, "cancelled": true, " CANCELLED ": true, "EXPIRED": true,
+		"ACTIVE": false, "UNPAID": false, "PENDING": false, "IN_TRIAL": false, "": false,
+	} {
+		if got := subscriptionIsFinished(status); got != want {
+			t.Errorf("subscriptionIsFinished(%q) = %v, want %v", status, got, want)
+		}
+	}
+}
+
+func TestReconcileMarksWhenAirwallexHoldsNoSubscriptionAtAll(t *testing.T) {
+	truncateSubscriptionTables(t)
+	sub := seedRenewingSub(t, 7, "bcus_empty")
+
+	// Pinned deliberately rather than incidentally: the candidate already has a
+	// local source="order" row, so an empty list is genuine absence at the
+	// processor, not ambiguity. Requiring an explicit CANCELLED row instead
+	// would reinstate the original bug for any customer whose cancelled
+	// subscription drops off the list entirely.
+	withStubbedAirwallex(t, func(string) ([]airwallex.BillingSubscription, error) {
+		return nil, nil
+	})
+
+	if _, err := ReconcileAirwallexCancellations(100); err != nil {
+		t.Fatal(err)
+	}
+	if cancelledAt(t, sub.Id) == 0 {
+		t.Fatal("no subscription at the processor — should have been marked")
 	}
 }

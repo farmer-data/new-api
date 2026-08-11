@@ -530,13 +530,20 @@ func AirwallexWebhook(c *gin.Context) {
 		// Airwallex Billing emits invoice.payment.paid (not invoice.paid) for the
 		// version pinned on our endpoint; accept both so renewals route correctly.
 		handlerErr = handleAirwallexInvoicePaid(c, event)
-	case "subscription.cancelled", "subscription.unpaid":
+	case "subscription.cancelled":
 		// The downgrade itself stays engine-native (ExpireDueSubscriptions at
 		// term end). What this records is the renewal fact, which nothing else
 		// can reconstruct — and unlike the cancel endpoint, this fires for
-		// cancellations made outside the portal: support acting in the
-		// Airwallex dashboard, or a subscription going unpaid through dunning.
+		// cancellations made outside the portal, e.g. support acting in the
+		// Airwallex dashboard.
 		handlerErr = handleAirwallexSubscriptionCancelled(c, event)
+	case "subscription.unpaid":
+		// NOT a cancellation. The subscription has entered dunning: a payment
+		// failed and Airwallex is retrying. It can still recover, and telling
+		// the customer their plan is ending — at the moment their card happens
+		// to be declined — would be both alarming and wrong. If it ultimately
+		// does end, subscription.cancelled fires and that path records it.
+		logger.LogInfo(ctx, fmt.Sprintf("Airwallex webhook subscription.unpaid: subscription=%v 进入催缴，未标记停止续费", event.Data.Object["id"]))
 	case "payment_intent.succeeded":
 		handlerErr = handleAirwallexIntentSucceeded(c, event, body)
 	default:
