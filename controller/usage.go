@@ -17,6 +17,7 @@ import (
 const (
 	UsageMeterRequests = "requests"
 	UsageMeterIncluded = "included"
+	UsageMeterWeekly   = "weekly"
 	UsageMeterMonthly  = "monthly"
 	UsageMeterImages   = "images"
 )
@@ -45,6 +46,9 @@ type UsageInputs struct {
 	MonthlyCostUsed  int64
 	MonthlyCostLimit int64
 	MonthlyResetAt   int64
+	WeeklyCostUsed   int64
+	WeeklyCostLimit  int64
+	WeeklyResetAt    int64
 	ImagesUsed       int
 	ImageLimit       int
 }
@@ -71,6 +75,17 @@ func BuildUsageMeters(in UsageInputs) []UsageMeter {
 		})
 	}
 
+	// Emitted before monthly so the wire order matches the card's reading order
+	// (5h / week / month) and the portal needs no sort of its own.
+	if in.WeeklyCostLimit > 0 {
+		meters = append(meters, UsageMeter{
+			Kind:    UsageMeterWeekly,
+			Used:    in.WeeklyCostUsed,
+			Limit:   in.WeeklyCostLimit,
+			Percent: percentUsed(in.WeeklyCostUsed, in.WeeklyCostLimit),
+			ResetAt: in.WeeklyResetAt,
+		})
+	}
 	if in.MonthlyCostLimit > 0 {
 		meters = append(meters, UsageMeter{
 			Kind:    UsageMeterMonthly,
@@ -80,13 +95,15 @@ func BuildUsageMeters(in UsageInputs) []UsageMeter {
 			ResetAt: in.MonthlyResetAt,
 		})
 	}
+	// The image allowance is spent against the weekly cycle, so it refills with
+	// the week, not the month.
 	if in.ImageLimit > 0 {
 		meters = append(meters, UsageMeter{
 			Kind:    UsageMeterImages,
 			Used:    int64(in.ImagesUsed),
 			Limit:   int64(in.ImageLimit),
 			Percent: percentUsed(int64(in.ImagesUsed), int64(in.ImageLimit)),
-			ResetAt: in.MonthlyResetAt,
+			ResetAt: in.WeeklyResetAt,
 		})
 	}
 
@@ -166,11 +183,23 @@ func GetUserUsage(c *gin.Context) {
 		cycleSubs = subs
 	}
 
-	cycleStart, resetAt := service.UsageCycle(service.CycleMonth, service.CycleSubscription(cycleSubs), time.Now())
-	if cost, _, images, err := model.GetUsage(userId, service.CycleMonth, cycleStart); err == nil {
+	sub := service.CycleSubscription(cycleSubs)
+	now := time.Now()
+	monthStart, monthResetAt := service.UsageCycle(service.CycleMonth, userId, sub, now)
+	weekStart, weekResetAt := service.UsageCycle(service.CycleWeek, userId, sub, now)
+
+	if cost, _, _, err := model.GetUsage(userId, service.CycleMonth, monthStart); err == nil {
 		in.MonthlyCostUsed = cost
 		in.MonthlyCostLimit = setting.GetMonthlyCostLimit(group)
-		in.MonthlyResetAt = resetAt
+		in.MonthlyResetAt = monthResetAt
+	}
+
+	// Images live on the weekly row now (see CheckUsageAllowance), so they must
+	// be read from it — reading the monthly row would report a permanent zero.
+	if cost, _, images, err := model.GetUsage(userId, service.CycleWeek, weekStart); err == nil {
+		in.WeeklyCostUsed = cost
+		in.WeeklyCostLimit = setting.GetWeeklyCostLimit(group)
+		in.WeeklyResetAt = weekResetAt
 		in.ImagesUsed = images
 		// An unconfigured group reports limit 0 here too, same as an explicit
 		// 0: BuildUsageMeters already omits the images meter whenever the

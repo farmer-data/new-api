@@ -41,28 +41,28 @@ func TestGetUsageForAnUntouchedCycleIsZeroNotAnError(t *testing.T) {
 func TestReserveImagesCountsEachDistinctHashOnce(t *testing.T) {
 	resetUsageTables(t)
 
-	n, err := ReserveImages(7, 1786000000, []string{"aaa", "bbb"}, 100)
+	n, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"aaa", "bbb"}, 100)
 	require.NoError(t, err)
 	require.Equal(t, 2, n)
 
-	n, err = ReserveImages(7, 1786000000, []string{"aaa"}, 100)
+	n, err = ReserveImages(7, CycleKindWeek, 1786000000, []string{"aaa"}, 100)
 	require.NoError(t, err)
 	require.Equal(t, 0, n, "already reserved this cycle")
 
-	_, _, images, err := GetUsage(7, "month", 1786000000)
+	_, _, images, err := GetUsage(7, CycleKindWeek, 1786000000)
 	require.NoError(t, err)
 	require.Equal(t, 2, images)
 }
 
 func TestReserveImagesRefusesAtTheLimitWithoutPartiallyConsuming(t *testing.T) {
 	resetUsageTables(t)
-	_, err := ReserveImages(7, 1786000000, []string{"a", "b"}, 3)
+	_, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a", "b"}, 3)
 	require.NoError(t, err)
 
-	_, err = ReserveImages(7, 1786000000, []string{"c", "d"}, 3)
+	_, err = ReserveImages(7, CycleKindWeek, 1786000000, []string{"c", "d"}, 3)
 	require.ErrorIs(t, err, ErrImageLimitReached)
 
-	_, _, images, err := GetUsage(7, "month", 1786000000)
+	_, _, images, err := GetUsage(7, CycleKindWeek, 1786000000)
 	require.NoError(t, err)
 	require.Equal(t, 2, images, "a refused batch must reserve nothing")
 }
@@ -70,18 +70,18 @@ func TestReserveImagesRefusesAtTheLimitWithoutPartiallyConsuming(t *testing.T) {
 func TestReserveImagesWithZeroLimitRefusesEverything(t *testing.T) {
 	resetUsageTables(t)
 
-	_, err := ReserveImages(7, 1786000000, []string{"a"}, 0)
+	_, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a"}, 0)
 	require.ErrorIs(t, err, ErrImageLimitReached)
 }
 
 func TestReserveImagesDeduplicatesRepeatedHashWithinTheSameBatch(t *testing.T) {
 	resetUsageTables(t)
 
-	n, err := ReserveImages(7, 1786000000, []string{"a", "a"}, 100)
+	n, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a", "a"}, 100)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 
-	_, _, images, err := GetUsage(7, "month", 1786000000)
+	_, _, images, err := GetUsage(7, CycleKindWeek, 1786000000)
 	require.NoError(t, err)
 	require.Equal(t, 1, images)
 }
@@ -89,7 +89,7 @@ func TestReserveImagesDeduplicatesRepeatedHashWithinTheSameBatch(t *testing.T) {
 func TestReserveImagesRepeatedHashWithinBatchCountsOnceAgainstTheLimit(t *testing.T) {
 	resetUsageTables(t)
 
-	n, err := ReserveImages(7, 1786000000, []string{"a", "a"}, 1)
+	n, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a", "a"}, 1)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }
@@ -102,13 +102,13 @@ func TestReserveImagesRepeatedHashWithinBatchCountsOnceAgainstTheLimit(t *testin
 // value of images_used surviving an AddUsage call made after it was set.
 func TestAddUsageDoesNotOverwriteImagesUsed(t *testing.T) {
 	resetUsageTables(t)
-	n, err := ReserveImages(7, 1786000000, []string{"a", "b"}, 100)
+	n, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a", "b"}, 100)
 	require.NoError(t, err)
 	require.Equal(t, 2, n)
 
-	require.NoError(t, AddUsage(7, "month", 1786000000, 500, 1))
+	require.NoError(t, AddUsage(7, CycleKindWeek, 1786000000, 500, 1))
 
-	cost, requests, images, err := GetUsage(7, "month", 1786000000)
+	cost, requests, images, err := GetUsage(7, CycleKindWeek, 1786000000)
 	require.NoError(t, err)
 	require.Equal(t, int64(500), cost)
 	require.Equal(t, 1, requests)
@@ -120,14 +120,14 @@ func TestAddUsageDoesNotOverwriteImagesUsed(t *testing.T) {
 func TestReserveImagesAcceptsExactlyUpToTheLimitThenRefusesTheNext(t *testing.T) {
 	resetUsageTables(t)
 
-	n, err := ReserveImages(7, 1786000000, []string{"a", "b", "c"}, 3)
+	n, err := ReserveImages(7, CycleKindWeek, 1786000000, []string{"a", "b", "c"}, 3)
 	require.NoError(t, err)
 	require.Equal(t, 3, n)
 
-	_, err = ReserveImages(7, 1786000000, []string{"d"}, 3)
+	_, err = ReserveImages(7, CycleKindWeek, 1786000000, []string{"d"}, 3)
 	require.ErrorIs(t, err, ErrImageLimitReached)
 
-	_, _, images, err := GetUsage(7, "month", 1786000000)
+	_, _, images, err := GetUsage(7, CycleKindWeek, 1786000000)
 	require.NoError(t, err)
 	require.Equal(t, 3, images, "the refused image must not have been partially reserved")
 }

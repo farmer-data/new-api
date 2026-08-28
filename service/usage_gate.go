@@ -15,6 +15,7 @@ import (
 
 const (
 	UsageLimitMonthly = "monthly"
+	UsageLimitWeekly  = "weekly"
 	UsageLimitImages  = "images"
 )
 
@@ -27,7 +28,11 @@ const (
 func UsageLimitMessage(lang string, kind string, resetAt int64) string {
 	key := i18n.MsgUsageMonthlyExhausted
 	noDateKey := i18n.MsgUsageMonthlyExhaustedNoDate
-	if kind == UsageLimitImages {
+	switch kind {
+	case UsageLimitWeekly:
+		key = i18n.MsgUsageWeeklyExhausted
+		noDateKey = i18n.MsgUsageWeeklyExhaustedNoDate
+	case UsageLimitImages:
 		key = i18n.MsgUsageImagesExhausted
 		noDateKey = i18n.MsgUsageImagesExhaustedNoDate
 	}
@@ -53,10 +58,42 @@ func RequestImageHashes(req dto.Request) []string {
 // cost allowance or image entitlement, and reserves the images it accepts.
 // Called before pre-consume, so a refusal costs nothing.
 func CheckUsageAllowance(userId int, group string, lang string, sub *model.UserSubscription, imageHashes []string, now time.Time) error {
-	cycleStart, resetAt := UsageCycle(CycleMonth, sub, now)
+	monthStart, monthResetAt := UsageCycle(CycleMonth, userId, sub, now)
+	weekStart, weekResetAt := UsageCycle(CycleWeek, userId, sub, now)
+
+	// Both cost ceilings can be up at once, and then the user is not free until
+	// the LAST of them refills. That later date is the only true answer to "when
+	// can I work again": naming the sooner one sends someone away to come back
+	// on a day they are still blocked, which is the same broken promise as
+	// substituting "next cycle" for a real date.
+	//
+	// Which one is later is not fixed — a week that straddles a month end
+	// refills after the month does — so it is compared, not assumed.
+	var (
+		blockedKind    string
+		blockedResetAt int64
+	)
+	raise := func(kind string, resetAt int64) {
+		if blockedKind == "" || resetAt > blockedResetAt {
+			blockedKind, blockedResetAt = kind, resetAt
+		}
+	}
+
+	if limit := setting.GetWeeklyCostLimit(group); limit > 0 {
+		used, _, _, err := model.GetUsage(userId, CycleWeek, weekStart)
+		if err != nil {
+			logger.LogWarn(context.Background(), fmt.Sprintf(
+				"usage allowance check failed to read weekly cost counter, allowing request (userId=%d, group=%s, op=GetUsage): %s",
+				userId, group, err.Error()))
+			return nil // a counter we cannot read must not block a paying request
+		}
+		if used >= limit {
+			raise(UsageLimitWeekly, weekResetAt)
+		}
+	}
 
 	if limit := setting.GetMonthlyCostLimit(group); limit > 0 {
-		used, _, _, err := model.GetUsage(userId, CycleMonth, cycleStart)
+		used, _, _, err := model.GetUsage(userId, CycleMonth, monthStart)
 		if err != nil {
 			logger.LogWarn(context.Background(), fmt.Sprintf(
 				"usage allowance check failed to read cost counter, allowing request (userId=%d, group=%s, op=GetUsage): %s",
@@ -64,8 +101,12 @@ func CheckUsageAllowance(userId int, group string, lang string, sub *model.UserS
 			return nil // a counter we cannot read must not block a paying request
 		}
 		if used >= limit {
-			return errors.New(UsageLimitMessage(lang, UsageLimitMonthly, resetAt))
+			raise(UsageLimitMonthly, monthResetAt)
 		}
+	}
+
+	if blockedKind != "" {
+		return errors.New(UsageLimitMessage(lang, blockedKind, blockedResetAt))
 	}
 
 	// A group absent from the map has no configured image entitlement at all
@@ -74,16 +115,22 @@ func CheckUsageAllowance(userId int, group string, lang string, sub *model.UserS
 	// was never configured would 403 every image request for every group
 	// until an operator fills the map in. Only a group actually present in
 	// the map — including an explicit 0 — is enforced.
+	//
+	// The image allowance runs on the WEEKLY cycle despite the setting's name
+	// (kept so the stored option key is not orphaned). One consequence worth
+	// knowing: UserImageUpload is keyed on cycle_start, so the dedup window
+	// shrinks with it — the same image re-sent across a week boundary is
+	// charged twice.
 	if len(imageHashes) > 0 {
 		if limit, found := setting.GetMonthlyImageLimit(group); found {
-			if _, err := model.ReserveImages(userId, cycleStart, imageHashes, limit); err != nil {
+			if _, err := model.ReserveImages(userId, model.CycleKindWeek, weekStart, imageHashes, limit); err != nil {
 				if errors.Is(err, model.ErrImageLimitReached) {
 					if limit == 0 {
 						// Explicitly configured at 0: this plan never had any
 						// images to spend, so there is nothing to "refill".
 						return errors.New(i18n.Translate(lang, i18n.MsgUsageImagesNotIncluded))
 					}
-					return errors.New(UsageLimitMessage(lang, UsageLimitImages, resetAt))
+					return errors.New(UsageLimitMessage(lang, UsageLimitImages, weekResetAt))
 				}
 				logger.LogWarn(context.Background(), fmt.Sprintf(
 					"usage allowance check failed to reserve images, allowing request (userId=%d, group=%s, op=ReserveImages): %s",

@@ -74,7 +74,7 @@ func TestCheckUsageAllowsAFreshCycle(t *testing.T) {
 func TestCheckUsageRefusesOnceTheCostLimitIsSpent(t *testing.T) {
 	truncate(t)
 	withLimits(t, `{"free":1000}`, `{"free":0}`)
-	start, _ := UsageCycle(CycleMonth, nil, time.Now())
+	start, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	require.NoError(t, model.AddUsage(42, CycleMonth, start, 1000, 1))
 
 	err := CheckUsageAllowance(42, "free", i18n.LangEn, nil, nil, time.Now())
@@ -86,7 +86,7 @@ func TestCheckUsageRefusesOnceTheCostLimitIsSpent(t *testing.T) {
 func TestCheckUsageRefusalIsLocalised(t *testing.T) {
 	truncate(t)
 	withLimits(t, `{"free":1000}`, `{"free":0}`)
-	start, _ := UsageCycle(CycleMonth, nil, time.Now())
+	start, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	require.NoError(t, model.AddUsage(46, CycleMonth, start, 1000, 1))
 
 	en := CheckUsageAllowance(46, "free", i18n.LangEn, nil, nil, time.Now())
@@ -102,7 +102,7 @@ func TestCheckUsageRefusalIsLocalised(t *testing.T) {
 func TestCheckUsageWithAnUncappedGroupNeverRefuses(t *testing.T) {
 	truncate(t)
 	withLimits(t, `{"pro":0}`, `{"pro":100}`)
-	start, _ := UsageCycle(CycleMonth, nil, time.Now())
+	start, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	require.NoError(t, model.AddUsage(43, CycleMonth, start, 999999999, 1))
 
 	require.NoError(t, CheckUsageAllowance(43, "pro", i18n.LangEn, nil, nil, time.Now()))
@@ -151,7 +151,7 @@ func TestCheckUsageNoEntitlementMessageDiffersFromExhaustedMessage(t *testing.T)
 	require.Error(t, noEntitlement)
 
 	withLimits(t, `{}`, `{"pro":1}`)
-	start, _ := UsageCycle(CycleMonth, nil, time.Now())
+	start, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	require.NoError(t, CheckUsageAllowance(53, "pro", i18n.LangEn, nil, []string{"hash-x"}, time.Now()))
 	_ = start
 	exhausted := CheckUsageAllowance(53, "pro", i18n.LangEn, nil, []string{"hash-y"}, time.Now())
@@ -171,4 +171,126 @@ func TestCheckUsageChargesAnImageOnlyOncePerCycle(t *testing.T) {
 	require.NoError(t, CheckUsageAllowance(45, "pro", i18n.LangEn, nil, []string{"hash-a"}, now),
 		"the same image re-sent on the next turn is already paid for")
 	require.Error(t, CheckUsageAllowance(45, "pro", i18n.LangEn, nil, []string{"hash-b"}, now))
+}
+
+// --- weekly ----------------------------------------------------------------
+
+func withWeeklyLimit(t *testing.T, weekly string) {
+	t.Helper()
+	require.NoError(t, setting.UpdateWeeklyCostLimitGroupByJSONString(weekly))
+	t.Cleanup(func() {
+		_ = setting.UpdateWeeklyCostLimitGroupByJSONString(`{}`)
+	})
+}
+
+func TestUsageLimitMessageDistinguishesWeeklyFromMonthly(t *testing.T) {
+	weekly := UsageLimitMessage(i18n.LangEn, UsageLimitWeekly, pauseResumeAt)
+	monthly := UsageLimitMessage(i18n.LangEn, UsageLimitMonthly, pauseResumeAt)
+
+	require.NotEqual(t, weekly, monthly, "the two walls refill at different times and must not read alike")
+	require.Contains(t, weekly, "week")
+	require.Contains(t, monthly, "month")
+}
+
+// 本周期 and 本周 differ by one character; a reader glancing at the wall must be
+// able to tell which allowance ran out.
+func TestUsageLimitMessageWeeklyAndMonthlyDifferInEveryLocale(t *testing.T) {
+	for _, lang := range []string{i18n.LangEn, i18n.LangZhCN, i18n.LangZhTW} {
+		weekly := UsageLimitMessage(lang, UsageLimitWeekly, pauseResumeAt)
+		monthly := UsageLimitMessage(lang, UsageLimitMonthly, pauseResumeAt)
+
+		require.NotEmpty(t, weekly)
+		require.NotContains(t, weekly, "{{", "unfilled template in "+lang)
+		require.NotContains(t, weekly, "usage.", "untranslated key in "+lang)
+		require.NotEqual(t, weekly, monthly, "weekly and monthly must not read alike in "+lang)
+	}
+}
+
+func TestCheckUsageRefusesOnceTheWeeklyLimitIsSpent(t *testing.T) {
+	truncate(t)
+	withLimits(t, `{"free":0}`, `{"free":0}`)
+	withWeeklyLimit(t, `{"free":1000}`)
+	start, _ := UsageCycle(CycleWeek, 51, nil, time.Now())
+	require.NoError(t, model.AddUsage(51, CycleWeek, start, 1000, 1))
+
+	err := CheckUsageAllowance(51, "free", i18n.LangEn, nil, nil, time.Now())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "week")
+}
+
+// When both ceilings are spent the user is not free until the later of the two
+// refills, so that is the date the wall must name. Naming the sooner one sends
+// them away to return on a day they are still blocked — the exact failure the
+// "real date or nothing" rule exists to prevent.
+func TestCheckUsageNamesTheLaterWallWhenBothAreUp(t *testing.T) {
+	truncate(t)
+	withLimits(t, `{"free":1000}`, `{"free":0}`)
+	withWeeklyLimit(t, `{"free":1000}`)
+	now := time.Now()
+	weekStart, weekResetAt := UsageCycle(CycleWeek, 52, nil, now)
+	monthStart, monthResetAt := UsageCycle(CycleMonth, 52, nil, now)
+	require.NoError(t, model.AddUsage(52, CycleWeek, weekStart, 5000, 1))
+	require.NoError(t, model.AddUsage(52, CycleMonth, monthStart, 5000, 1))
+
+	err := CheckUsageAllowance(52, "free", i18n.LangEn, nil, nil, now)
+
+	require.Error(t, err)
+	// Which of the two is later depends on where in the month "now" falls, so
+	// the expectation is derived rather than hard-coded.
+	later, sooner := "month", "week"
+	if weekResetAt > monthResetAt {
+		later, sooner = "week", "month"
+	}
+	require.Contains(t, err.Error(), later)
+	require.NotContains(t, err.Error(), sooner)
+}
+
+// The one-wall cases must still name their own date: the "later of the two"
+// rule applies only among ceilings that are actually spent.
+func TestCheckUsageNamesTheWeeklyWallWhenOnlyItIsUp(t *testing.T) {
+	truncate(t)
+	withLimits(t, `{"free":999999999}`, `{"free":0}`)
+	withWeeklyLimit(t, `{"free":1000}`)
+	now := time.Now()
+	weekStart, _ := UsageCycle(CycleWeek, 55, nil, now)
+	require.NoError(t, model.AddUsage(55, CycleWeek, weekStart, 5000, 1))
+
+	err := CheckUsageAllowance(55, "free", i18n.LangEn, nil, nil, now)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "week")
+	require.NotContains(t, err.Error(), "month")
+}
+
+// The weekly counter is a separate row; exhausting it must not be inferred
+// from monthly spend.
+func TestCheckUsageWeeklyIgnoresTheMonthlyCounter(t *testing.T) {
+	truncate(t)
+	withLimits(t, `{"free":0}`, `{"free":0}`)
+	withWeeklyLimit(t, `{"free":1000}`)
+	monthStart, _ := UsageCycle(CycleMonth, 53, nil, time.Now())
+	require.NoError(t, model.AddUsage(53, CycleMonth, monthStart, 999999, 1))
+
+	require.NoError(t, CheckUsageAllowance(53, "free", i18n.LangEn, nil, nil, time.Now()))
+}
+
+// Images are charged to the weekly row, so the weekly row is where the count
+// has to land — the monthly row must stay untouched by an image reservation.
+func TestCheckUsageChargesImagesToTheWeeklyRow(t *testing.T) {
+	truncate(t)
+	withLimits(t, `{"pro":0}`, `{"pro":70}`)
+	now := time.Now()
+
+	require.NoError(t, CheckUsageAllowance(54, "pro", i18n.LangEn, nil, []string{"img-a", "img-b"}, now))
+
+	weekStart, _ := UsageCycle(CycleWeek, 54, nil, now)
+	monthStart, _ := UsageCycle(CycleMonth, 54, nil, now)
+	_, _, weekImages, err := model.GetUsage(54, CycleWeek, weekStart)
+	require.NoError(t, err)
+	require.Equal(t, 2, weekImages)
+
+	_, _, monthImages, err := model.GetUsage(54, CycleMonth, monthStart)
+	require.NoError(t, err)
+	require.Equal(t, 0, monthImages, "images must not also land on the monthly row")
 }

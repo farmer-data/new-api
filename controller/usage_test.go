@@ -192,3 +192,64 @@ func TestBuildUsageMetersNoImageMeterForATierWithoutTheEntitlement(t *testing.T)
 
 	require.Nil(t, meterOfKind(meters, UsageMeterImages))
 }
+
+// --- weekly ----------------------------------------------------------------
+
+// The card reads 5h / week / month top to bottom, so the wire order must match;
+// the portal draws what it is given without sorting.
+func TestBuildUsageMetersEmitsWeeklyBeforeMonthly(t *testing.T) {
+	meters := BuildUsageMeters(UsageInputs{
+		RateLimitEnabled: true,
+		RequestLimit:     800,
+		RequestsUsed:     80,
+		WeeklyCostUsed:   1500000,
+		WeeklyCostLimit:  3000000,
+		WeeklyResetAt:    1788000000,
+		MonthlyCostUsed:  6000000,
+		MonthlyCostLimit: 12000000,
+		MonthlyResetAt:   1790000000,
+	})
+
+	kinds := make([]string, 0, len(meters))
+	for _, m := range meters {
+		kinds = append(kinds, m.Kind)
+	}
+	require.Equal(t, []string{UsageMeterRequests, UsageMeterWeekly, UsageMeterMonthly}, kinds)
+}
+
+func TestBuildUsageMetersReportsWeeklyPercentAndReset(t *testing.T) {
+	meters := BuildUsageMeters(UsageInputs{
+		WeeklyCostUsed:  750000,
+		WeeklyCostLimit: 3000000,
+		WeeklyResetAt:   1788000000,
+	})
+
+	require.Len(t, meters, 1)
+	require.Equal(t, UsageMeterWeekly, meters[0].Kind)
+	require.Equal(t, 25, meters[0].Percent)
+	require.Equal(t, int64(1788000000), meters[0].ResetAt)
+}
+
+// An unconfigured weekly group must draw nothing rather than an empty 0/0 bar,
+// matching how the monthly and image meters treat a missing limit.
+func TestBuildUsageMetersOmitsWeeklyWhenUnconfigured(t *testing.T) {
+	meters := BuildUsageMeters(UsageInputs{WeeklyCostUsed: 900, WeeklyCostLimit: 0})
+
+	require.Empty(t, meters)
+}
+
+// Images are spent against the weekly cycle, so the refill date they advertise
+// has to be the week's, not the month's.
+func TestBuildUsageMetersImagesRefillWithTheWeek(t *testing.T) {
+	meters := BuildUsageMeters(UsageInputs{
+		MonthlyResetAt: 1790000000,
+		WeeklyResetAt:  1788000000,
+		ImagesUsed:     35,
+		ImageLimit:     70,
+	})
+
+	require.Len(t, meters, 1)
+	require.Equal(t, UsageMeterImages, meters[0].Kind)
+	require.Equal(t, int64(1788000000), meters[0].ResetAt, "images refill with the week they are charged to")
+	require.Equal(t, 50, meters[0].Percent)
+}

@@ -13,8 +13,11 @@ import (
 // Nothing is reserved when it is returned.
 var ErrImageLimitReached = errors.New("monthly image limit reached")
 
-// CycleKindMonth duplicates service.CycleMonth to avoid a model→service import.
-const CycleKindMonth = "month"
+// These duplicate service.CycleMonth/CycleWeek to avoid a model→service import.
+const (
+	CycleKindMonth = "month"
+	CycleKindWeek  = "week"
+)
 
 // UserUsageCounter is one row per user per cycle. A new cycle is a new row,
 // which is why no reset job exists. cycle_kind is carried from day one so a
@@ -76,7 +79,11 @@ func GetUsage(userId int, kind string, cycleStart int64) (cost int64, requests i
 // ReserveImages inserts the hashes not already spent this cycle and returns how
 // many were newly reserved. It reserves all or nothing: if the batch would
 // cross `limit`, it returns ErrImageLimitReached having changed nothing.
-func ReserveImages(userId int, cycleStart int64, hashes []string, limit int) (int, error) {
+// kind selects which counter row the images are charged against. It must match
+// the cycle cycleStart was derived from: passing a weekly start with a monthly
+// kind would silently open a third counter row keyed (month, weekStart) and
+// count into that instead of the row anyone reads.
+func ReserveImages(userId int, kind string, cycleStart int64, hashes []string, limit int) (int, error) {
 	if len(hashes) == 0 {
 		return 0, nil
 	}
@@ -93,7 +100,7 @@ func ReserveImages(userId int, cycleStart int64, hashes []string, limit int) (in
 
 	accepted := 0
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := ensureUsageRow(tx, userId, CycleKindMonth, cycleStart); err != nil {
+		if err := ensureUsageRow(tx, userId, kind, cycleStart); err != nil {
 			return err
 		}
 
@@ -117,7 +124,7 @@ func ReserveImages(userId int, cycleStart int64, hashes []string, limit int) (in
 		// inserts above) rolls back, so nothing is reserved.
 		upd := tx.Model(&UserUsageCounter{}).
 			Where("user_id = ? AND cycle_kind = ? AND cycle_start = ? AND images_used + ? <= ?",
-				userId, CycleKindMonth, cycleStart, fresh, limit).
+				userId, kind, cycleStart, fresh, limit).
 			Update("images_used", gorm.Expr("images_used + ?", fresh))
 		if upd.Error != nil {
 			return upd.Error

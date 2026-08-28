@@ -323,9 +323,19 @@ func accrueShadowUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) {
 		relayInfo.PriceData.CompletionRatio,
 		relayInfo.PriceData.CacheRatio,
 	)
-	cycleStart, _ := UsageCycle(CycleMonth, CycleSubscriptionFor(relayInfo.UserId), time.Now())
-	if err := model.AddUsage(relayInfo.UserId, CycleMonth, cycleStart, shadow, 1); err != nil {
-		common.SysLog("usage accrual failed: " + err.Error())
+	// One subscription read, one shadow value, two counter rows. The cost of a
+	// request does not depend on which window is counting it, so the value is
+	// computed once and written to both; re-deriving it per cycle would invite
+	// the two meters to disagree.
+	now := time.Now()
+	sub := CycleSubscriptionFor(relayInfo.UserId)
+	for _, kind := range []string{CycleMonth, CycleWeek} {
+		cycleStart, _ := UsageCycle(kind, relayInfo.UserId, sub, now)
+		// Each write is attempted regardless of the other's outcome: a failed
+		// weekly write must not also cost us the monthly count.
+		if err := model.AddUsage(relayInfo.UserId, kind, cycleStart, shadow, 1); err != nil {
+			common.SysLog("usage accrual failed (" + kind + "): " + err.Error())
+		}
 	}
 }
 

@@ -6,17 +6,37 @@ import (
 	"github.com/QuantumNous/new-api/model"
 )
 
-// CycleMonth is the only cycle kind in use. The counter table carries the kind
-// so a weekly cap can be added later without migrating live data; if one is,
-// derive its start from a per-account slot rather than the calendar week, or
-// every account refills at the same instant.
-const CycleMonth = "month"
+// Cycle kinds. The counter table carries the kind, so the two coexist per user
+// without a migration (see model.UserUsageCounter's unique index).
+const (
+	CycleMonth = "month"
+	CycleWeek  = "week"
+)
+
+const weekSeconds int64 = 7 * 24 * 60 * 60
+
+// weekGridEpoch is a Monday, used only to give slotted accounts a stable grid
+// to sit on. It is not a refill date anyone sees: slot pushes each account off
+// it by a whole number of days.
+func weekGridEpoch(loc *time.Location) time.Time {
+	return time.Date(2024, 1, 1, 0, 0, 0, 0, loc) // a Monday
+}
 
 // UsageCycle reports which cycle `now` falls in and when that cycle refills.
 // A user with a metered subscription counts against the subscription's own
 // cycle, so the pool and the counters always share one refill date. Everyone
-// else uses the calendar month.
-func UsageCycle(kind string, sub *model.UserSubscription, now time.Time) (cycleStart int64, resetAt int64) {
+// else uses the calendar month, or — for CycleWeek — a per-account slot.
+//
+// slot spreads unsubscribed accounts across the seven weekdays. Pass the user
+// id. It is ignored for CycleMonth, and for any account with a billing anchor
+// to follow. Slotting is not a load-shedding nicety: on a shared calendar week
+// an account created on a Saturday would get a two-day first cycle and hit its
+// cap almost immediately, which reads as a broken limit rather than a short
+// week.
+func UsageCycle(kind string, slot int, sub *model.UserSubscription, now time.Time) (cycleStart int64, resetAt int64) {
+	if kind == CycleWeek {
+		return weeklyCycle(slot, sub, now)
+	}
 	if sub != nil {
 		if sub.AmountTotal > 0 {
 			start := sub.LastResetTime
@@ -51,6 +71,33 @@ func monthlyAnniversary(anchorUnix int64, now time.Time) (int64, int64) {
 		months--
 	}
 	return addMonthsClamped(anchor, months).Unix(), addMonthsClamped(anchor, months+1).Unix()
+}
+
+// weeklyCycle walks fixed seven-day steps from an anchor. Unlike the monthly
+// branch there is no clamping to worry about, because a week has no short
+// months — which is also why it does not reuse monthlyAnniversary.
+//
+// A metered subscription's LastResetTime/NextResetTime are deliberately NOT
+// consulted here: those describe the pool's monthly refill and carry no weekly
+// meaning. Only StartTime, the billing anchor, is used.
+func weeklyCycle(slot int, sub *model.UserSubscription, now time.Time) (int64, int64) {
+	var anchor time.Time
+	if sub != nil && sub.StartTime > 0 {
+		anchor = time.Unix(sub.StartTime, 0).In(now.Location())
+	} else {
+		offset := slot % 7
+		if offset < 0 {
+			offset += 7
+		}
+		anchor = weekGridEpoch(now.Location()).AddDate(0, 0, offset)
+	}
+
+	if !now.After(anchor) {
+		return anchor.Unix(), anchor.Unix() + weekSeconds
+	}
+	elapsed := now.Unix() - anchor.Unix()
+	start := anchor.Unix() + (elapsed/weekSeconds)*weekSeconds
+	return start, start + weekSeconds
 }
 
 // addMonthsClamped adds whole months, clamping a day-of-month that the target

@@ -62,7 +62,7 @@ func TestPostTextConsumeQuotaAccruesShadowCostAtGroupRatioZero(t *testing.T) {
 		TotalTokens:      150,
 	}
 
-	cycleStart, _ := UsageCycle(CycleMonth, nil, time.Now())
+	cycleStart, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	beforeCost, _, _, err := model.GetUsage(userId, CycleMonth, cycleStart)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), beforeCost, "precondition: nothing accrued yet")
@@ -110,7 +110,7 @@ func TestPostTextConsumeQuotaDoesNotAccrueWithoutUsage(t *testing.T) {
 
 	PostTextConsumeQuota(ctx, relayInfo, nil, nil)
 
-	cycleStart, _ := UsageCycle(CycleMonth, nil, time.Now())
+	cycleStart, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	afterCost, afterRequests, _, err := model.GetUsage(userId, CycleMonth, cycleStart)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), afterCost)
@@ -160,7 +160,7 @@ func TestAccrualAndReadShareTheBillingAnchoredCycle(t *testing.T) {
 	PostTextConsumeQuota(ctx, relayInfo, usage, nil)
 
 	// Read the way the gate and the portal endpoint do: through the anchor.
-	anchoredStart, _ := UsageCycle(CycleMonth, CycleSubscriptionFor(userId), time.Now())
+	anchoredStart, _ := UsageCycle(CycleMonth, userId, CycleSubscriptionFor(userId), time.Now())
 	cost, requests, _, err := model.GetUsage(userId, CycleMonth, anchoredStart)
 	require.NoError(t, err)
 	require.Equal(t, int64(300), cost, "the reader must find what the writer accrued")
@@ -168,9 +168,57 @@ func TestAccrualAndReadShareTheBillingAnchoredCycle(t *testing.T) {
 
 	// And prove the anchor genuinely moved the cycle off the calendar month —
 	// otherwise this test would pass even if the anchor were being ignored.
-	calendarStart, _ := UsageCycle(CycleMonth, nil, time.Now())
+	calendarStart, _ := UsageCycle(CycleMonth, 0, nil, time.Now())
 	require.NotEqual(t, calendarStart, anchoredStart, "a mid-month billing date must not resolve to the 1st")
 	calendarCost, _, _, err := model.GetUsage(userId, CycleMonth, calendarStart)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), calendarCost, "nothing should have landed in the calendar-month row")
+}
+
+// Both cost meters are fed from one settlement. If only one row moved, either
+// the weekly wall would never rise or the monthly one would stall — and the two
+// must agree, because they are the same request counted in two windows.
+func TestPostTextConsumeQuotaAccruesToBothCycles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	truncate(t)
+
+	userId := 4101
+	seedUser(t, userId, 0)
+
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:                  userId,
+		RelayFormat:             types.RelayFormatOpenAI,
+		FinalRequestRelayFormat: types.RelayFormatOpenAI,
+		OriginModelName:         "gpt-4o-mini",
+		StartTime:               time.Now(),
+		ChannelMeta:             &relaycommon.ChannelMeta{},
+		PriceData: types.PriceData{
+			ModelRatio:      2,
+			CompletionRatio: 1,
+			CacheRatio:      1,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 0},
+		},
+	}
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
+
+	now := time.Now()
+	monthStart, _ := UsageCycle(CycleMonth, userId, nil, now)
+	weekStart, _ := UsageCycle(CycleWeek, userId, nil, now)
+	require.NotEqual(t, monthStart, weekStart, "precondition: the two cycles must be distinct rows")
+
+	PostTextConsumeQuota(ctx, relayInfo, usage, nil)
+
+	monthCost, monthRequests, _, err := model.GetUsage(userId, CycleMonth, monthStart)
+	require.NoError(t, err)
+	weekCost, weekRequests, _, err := model.GetUsage(userId, CycleWeek, weekStart)
+	require.NoError(t, err)
+
+	require.Greater(t, monthCost, int64(0), "monthly row should have accrued")
+	require.Equal(t, monthCost, weekCost, "one request costs the same in either window")
+	require.Equal(t, 1, monthRequests)
+	require.Equal(t, 1, weekRequests)
 }

@@ -148,6 +148,7 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
 	common.OptionMap["MonthlyCostLimitGroup"] = setting.MonthlyCostLimitGroup2JSONString()
+	common.OptionMap["WeeklyCostLimitGroup"] = setting.WeeklyCostLimitGroup2JSONString()
 	common.OptionMap["MonthlyImageLimitGroup"] = setting.MonthlyImageLimitGroup2JSONString()
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
@@ -554,6 +555,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "MonthlyCostLimitGroup":
 		err = setting.UpdateMonthlyCostLimitGroupByJSONString(value)
+	case "WeeklyCostLimitGroup":
+		err = setting.UpdateWeeklyCostLimitGroupByJSONString(value)
 	case "MonthlyImageLimitGroup":
 		err = setting.UpdateMonthlyImageLimitGroupByJSONString(value)
 	case "RetryTimes":

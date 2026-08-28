@@ -11,7 +11,7 @@ import (
 func TestUsageCycleWithoutSubscriptionUsesTheCalendarMonth(t *testing.T) {
 	now := time.Date(2026, 8, 10, 14, 30, 0, 0, time.Local)
 
-	start, resetAt := UsageCycle(CycleMonth, nil, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, nil, now)
 
 	require.Equal(t, time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local).Unix(), start)
 	require.Equal(t, time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local).Unix(), resetAt)
@@ -27,7 +27,7 @@ func TestUsageCycleIgnoresNextResetTimeOnAnUnmeteredRow(t *testing.T) {
 	now := time.Date(2026, 8, 10, 14, 30, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix(), NextResetTime: 1788000000}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, time.Date(2026, 7, 20, 11, 0, 0, 0, time.Local).Unix(), start)
 	require.Equal(t, time.Date(2026, 8, 20, 11, 0, 0, 0, time.Local).Unix(), resetAt)
@@ -43,7 +43,7 @@ func TestUsageCycleFollowsAMeteredSubscription(t *testing.T) {
 		NextResetTime: 1788000000,
 	}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, int64(1786000000), start, "the pool and the counters must share one cycle")
 	require.Equal(t, int64(1788000000), resetAt)
@@ -54,7 +54,7 @@ func TestUsageCycleFallsBackToStartTimeBeforeTheFirstReset(t *testing.T) {
 	now := time.Date(2026, 8, 10, 14, 30, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 13700000, StartTime: 1786500000, NextResetTime: 1789000000}
 
-	start, _ := UsageCycle(CycleMonth, sub, now)
+	start, _ := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, int64(1786500000), start)
 }
@@ -62,7 +62,7 @@ func TestUsageCycleFallsBackToStartTimeBeforeTheFirstReset(t *testing.T) {
 func TestUsageCycleOnDecemberRollsIntoNextYear(t *testing.T) {
 	now := time.Date(2026, 12, 20, 9, 0, 0, 0, time.Local)
 
-	_, resetAt := UsageCycle(CycleMonth, nil, now)
+	_, resetAt := UsageCycle(CycleMonth, 0, nil, now)
 
 	require.Equal(t, time.Date(2027, 1, 1, 0, 0, 0, 0, time.Local).Unix(), resetAt)
 }
@@ -75,7 +75,7 @@ func TestUsageCycleFollowsAnUnmeteredPayingSubscription(t *testing.T) {
 	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix(), EndTime: now.AddDate(0, 1, 0).Unix()}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, anchor.Unix(), start)
 	require.Equal(t, time.Date(2026, 9, 8, 9, 30, 0, 0, time.Local).Unix(), resetAt)
@@ -88,7 +88,7 @@ func TestUsageCycleOnAnAnnualPlanStillCyclesMonthly(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix(), EndTime: anchor.AddDate(1, 0, 0).Unix()}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, time.Date(2026, 11, 8, 9, 30, 0, 0, time.Local).Unix(), start)
 	require.Equal(t, time.Date(2026, 12, 8, 9, 30, 0, 0, time.Local).Unix(), resetAt)
@@ -101,7 +101,7 @@ func TestUsageCycleClampsAnchorsPastTheEndOfAShortMonth(t *testing.T) {
 	now := time.Date(2026, 2, 15, 8, 0, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix()}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, anchor.Unix(), start)
 	require.Equal(t, time.Date(2026, 2, 28, 8, 0, 0, 0, time.Local).Unix(), resetAt,
@@ -113,7 +113,7 @@ func TestUsageCycleOnTheAnniversaryItselfStartsTheNewCycle(t *testing.T) {
 	now := time.Date(2026, 9, 8, 9, 30, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix()}
 
-	start, resetAt := UsageCycle(CycleMonth, sub, now)
+	start, resetAt := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, now.Unix(), start)
 	require.Equal(t, time.Date(2026, 10, 8, 9, 30, 0, 0, time.Local).Unix(), resetAt)
@@ -124,7 +124,90 @@ func TestUsageCycleWithoutAnchorFallsBackToTheCalendarMonth(t *testing.T) {
 	now := time.Date(2026, 8, 10, 14, 30, 0, 0, time.Local)
 	sub := &model.UserSubscription{AmountTotal: 0, StartTime: 0}
 
-	start, _ := UsageCycle(CycleMonth, sub, now)
+	start, _ := UsageCycle(CycleMonth, 0, sub, now)
 
 	require.Equal(t, time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local).Unix(), start)
+}
+
+// --- weekly ----------------------------------------------------------------
+
+// The slot is what keeps every unsubscribed account off a shared refill
+// instant. Two accounts in adjacent slots must start their week on different
+// days, or the slotting is decorative.
+func TestWeeklyCycleSlotsUnsubscribedAccountsAcrossTheWeek(t *testing.T) {
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.Local)
+
+	startA, _ := UsageCycle(CycleWeek, 3, nil, now)
+	startB, _ := UsageCycle(CycleWeek, 4, nil, now)
+
+	require.NotEqual(t, startA, startB, "adjacent slots must not share a refill instant")
+	require.Equal(t, int64(24*60*60), startB-startA, "one slot apart is one day apart")
+}
+
+// Whatever the slot, a cycle is exactly seven days. This is the property that
+// stops a late-in-the-week signup from getting a stub cycle.
+func TestWeeklyCycleIsAlwaysSevenWholeDays(t *testing.T) {
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.Local)
+
+	for slot := 0; slot < 14; slot++ {
+		start, resetAt := UsageCycle(CycleWeek, slot, nil, now)
+		require.Equal(t, weekSeconds, resetAt-start, "slot %d", slot)
+		require.LessOrEqual(t, start, now.Unix(), "slot %d: cycle must have begun", slot)
+		require.Greater(t, resetAt, now.Unix(), "slot %d: cycle must not have ended", slot)
+	}
+}
+
+func TestWeeklyCycleAnchorsToTheSubscriptionStart(t *testing.T) {
+	anchor := time.Date(2026, 7, 20, 11, 0, 0, 0, time.Local)
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.Local)
+	sub := &model.UserSubscription{AmountTotal: 0, StartTime: anchor.Unix()}
+
+	start, resetAt := UsageCycle(CycleWeek, 5, sub, now)
+
+	// 2026-07-20 + 3 weeks = 2026-08-10, which contains 2026-08-12.
+	require.Equal(t, anchor.AddDate(0, 0, 21).Unix(), start, "the slot must not override a billing anchor")
+	require.Equal(t, anchor.AddDate(0, 0, 28).Unix(), resetAt)
+}
+
+// The pool's monthly refill dates must not leak into the weekly cycle.
+func TestWeeklyCycleIgnoresThePoolResetTimes(t *testing.T) {
+	anchor := time.Date(2026, 7, 20, 11, 0, 0, 0, time.Local)
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.Local)
+	sub := &model.UserSubscription{
+		AmountTotal:   20640000,
+		StartTime:     anchor.Unix(),
+		LastResetTime: 1786000000,
+		NextResetTime: 1788000000,
+	}
+
+	start, resetAt := UsageCycle(CycleWeek, 0, sub, now)
+
+	require.NotEqual(t, int64(1786000000), start, "last_reset_time is the pool's, not the week's")
+	require.NotEqual(t, int64(1788000000), resetAt, "next_reset_time is the pool's, not the week's")
+	require.Equal(t, weekSeconds, resetAt-start)
+}
+
+// A subscription that has not started yet gets its first full week, not a
+// negative-elapsed cycle walked backwards.
+func TestWeeklyCycleBeforeTheAnchorReturnsTheFirstWeek(t *testing.T) {
+	anchor := time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local)
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.Local)
+	sub := &model.UserSubscription{StartTime: anchor.Unix()}
+
+	start, resetAt := UsageCycle(CycleWeek, 0, sub, now)
+
+	require.Equal(t, anchor.Unix(), start)
+	require.Equal(t, anchor.Unix()+weekSeconds, resetAt)
+}
+
+// The month branch must be unaffected by the new parameter.
+func TestUsageCycleIgnoresSlotForTheMonthlyKind(t *testing.T) {
+	now := time.Date(2026, 8, 10, 14, 30, 0, 0, time.Local)
+
+	startA, resetA := UsageCycle(CycleMonth, 0, nil, now)
+	startB, resetB := UsageCycle(CycleMonth, 6, nil, now)
+
+	require.Equal(t, startA, startB)
+	require.Equal(t, resetA, resetB)
+	require.Equal(t, time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local).Unix(), startA)
 }
