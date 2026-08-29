@@ -378,7 +378,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		}
 		if userQuota <= 0 {
 			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("用户额度不足, 剩余额度: %s", logger.FormatQuota(userQuota)),
+				fmt.Errorf("%s", i18n.Translate(i18n.GetLangFromContext(c), i18n.MsgUsageWalletExhausted)),
 				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
@@ -449,7 +449,24 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		session, apiErr := trySubscription()
 		if apiErr != nil {
 			if apiErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
-				return tryWallet()
+				walletSession, walletErr := tryWallet()
+				if walletErr == nil {
+					return walletSession, nil
+				}
+				// Both pools are empty, so this is the wall the user actually
+				// meets — and which of the two errors we return decides what
+				// they read. The wallet's is a raw internal string: hardcoded
+				// Chinese shown to English users, carrying an internal quota
+				// figure and no refill date. The subscription's went through
+				// SubscriptionPauseMessage, so it is branded, translated, and
+				// names the day their allowance comes back. Prefer it.
+				//
+				// Only when the wallet failed for some OTHER reason does its
+				// error carry information the subscription's does not.
+				if walletErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
+					return nil, apiErr
+				}
+				return nil, walletErr
 			}
 			return nil, apiErr
 		}

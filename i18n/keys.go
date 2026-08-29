@@ -356,4 +356,8 @@ const (
 	// 0: it has never had any images to spend, so unlike ImagesExhausted this
 	// carries no refill date.
 	MsgUsageImagesNotIncluded = "usage.images_not_included"
+	// MsgUsageWalletExhausted is the wall for an account with no subscription
+	// pool behind it: there is no refill date to name, only a balance that ran
+	// out, so it carries no date rather than inventing one.
+	MsgUsageWalletExhausted = "usage.wallet_exhausted"
 )

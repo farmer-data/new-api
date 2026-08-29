@@ -294,3 +294,45 @@ func TestCheckUsageChargesImagesToTheWeeklyRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, monthImages, "images must not also land on the monthly row")
 }
+
+// --- which wall the user reads ---------------------------------------------
+
+// A pool-exhausted error went through SubscriptionPauseMessage: branded,
+// translated, and naming the day the allowance returns. The wallet's did not —
+// it was a hardcoded internal string. When both pools are empty the user meets
+// one wall and reads one sentence, so the copy must not depend on which
+// funding source happened to fail last.
+func TestWalletExhaustedMessageIsBrandedInEveryLocale(t *testing.T) {
+	for _, lang := range []string{i18n.LangEn, i18n.LangZhCN, i18n.LangZhTW} {
+		msg := i18n.Translate(lang, i18n.MsgUsageWalletExhausted)
+
+		require.NotEmpty(t, msg)
+		require.NotContains(t, msg, "usage.", "untranslated key in "+lang)
+		require.NotContains(t, msg, "{{", "unfilled template in "+lang)
+		// The old message leaked an internal quota figure into user-facing copy.
+		require.NotContains(t, msg, "剩余额度", "internal quota phrasing leaked in "+lang)
+		require.NotContains(t, msg, "$", "internal quota figure leaked in "+lang)
+	}
+}
+
+// A wallet has no refill date, so the rule that applies is the same one the
+// cost ceilings follow: the exact date or nothing, never a stand-in.
+func TestWalletExhaustedMessagePromisesNoDate(t *testing.T) {
+	for _, lang := range []string{i18n.LangEn, i18n.LangZhCN, i18n.LangZhTW} {
+		msg := i18n.Translate(lang, i18n.MsgUsageWalletExhausted)
+
+		require.NotContains(t, msg, "1970", "no date is better than the epoch")
+		require.NotContains(t, msg, "next cycle")
+		require.NotContains(t, msg, "下个周期")
+		require.NotContains(t, msg, "下個週期")
+	}
+}
+
+// English and Chinese must actually differ — a key present in one locale file
+// and missing from another silently falls back and reads identically.
+func TestWalletExhaustedMessageIsActuallyTranslated(t *testing.T) {
+	en := i18n.Translate(i18n.LangEn, i18n.MsgUsageWalletExhausted)
+	zh := i18n.Translate(i18n.LangZhCN, i18n.MsgUsageWalletExhausted)
+
+	require.NotEqual(t, en, zh, "the same wall must not read the same in a different locale")
+}
